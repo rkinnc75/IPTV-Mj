@@ -77,20 +77,19 @@ private fun isUsCategory(name: String?): Boolean {
 
             launch {
                 repository.getLiveCategories().collectLatest { categories ->
-
-    val usaOnly = prefs.usaOnlyChannels.first()
-            val filtered = if (usaOnly) {
-                categories.filter { isUsCategory(it.categoryName) }
-            } else {
-                categories
-            }
-
-    _liveCategories.value = filtered
-                    updateFavoriteCategories(filtered)
-            if (selectedLiveCategoryId == null && filtered.isNotEmpty()) {
-        selectLiveCategory(filtered.first().categoryId)
-    }
-}
+                    prefs.usaOnlyChannels.collectLatest { usaOnly ->
+                        val filtered = if (usaOnly) {
+                            categories.filter { isUsCategory(it.categoryName) }
+                        } else {
+                            categories
+                        }
+                        _liveCategories.value = filtered
+                        updateFavoriteCategories(filtered)
+                        if (selectedLiveCategoryId == null && filtered.isNotEmpty()) {
+                            selectLiveCategory(filtered.first().categoryId)
+                        }
+                    }
+                }
             }
 
             launch {

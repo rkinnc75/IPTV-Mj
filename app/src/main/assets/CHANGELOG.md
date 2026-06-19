@@ -1,5 +1,8 @@
 # IPTV App - Changelog
 
+## v1.1 (build 19) - 2026-06-19 00:38
+- USA filter now applies instantly without restarting app
+
 ## v1.1 (build 18) - 2026-06-19 00:28
 - Fix in-app install permission for Android 15
 
