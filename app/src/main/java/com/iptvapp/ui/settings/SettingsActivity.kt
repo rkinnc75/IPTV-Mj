@@ -25,7 +25,21 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import android.app.DownloadManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import androidx.core.content.FileProvider
+import java.io.File
 import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.URL
 
 @AndroidEntryPoint
 class SettingsActivity : AppCompatActivity() {
@@ -45,6 +59,7 @@ class SettingsActivity : AppCompatActivity() {
         binding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
         binding.btnWhatsNew.setOnClickListener { showChangelog() }
+        binding.btnCheckUpdate.setOnClickListener { checkForUpdate() }
 
         workManager = WorkManager.getInstance(this)
 
@@ -113,6 +128,88 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
+    private fun checkForUpdate() {
+        binding.tvUpdateStatus.text = "Checking..."
+        binding.btnCheckUpdate.isEnabled = false
+        lifecycleScope.launch {
+            try {
+                val json = withContext(Dispatchers.IO) {
+                    URL("https://raw.githubusercontent.com/Oliver29Klozoff/IPTV-Mj/main/version.json")
+                        .readText()
+                }
+                val obj = JSONObject(json)
+                val latestCode = obj.getInt("versionCode")
+                val latestName = obj.getString("versionName")
+                val apkUrl = obj.getString("apkUrl")
+                val installedCode = packageManager.getPackageInfo(packageName, 0).longVersionCode
+                if (latestCode > installedCode) {
+                    binding.tvUpdateStatus.text = "Update available: v$latestName"
+                    AlertDialog.Builder(this@SettingsActivity)
+                        .setTitle("Update Available")
+                        .setMessage("Version $latestName is available. Download and install now?")
+                        .setPositiveButton("Download") { _, _ ->
+                            downloadAndInstall(apkUrl, latestName)
+                        }
+                        .setNegativeButton("Later", null)
+                        .show()
+                } else {
+                    binding.tvUpdateStatus.text = "You are up to date (v$latestName)"
+                }
+            } catch (e: Exception) {
+                binding.tvUpdateStatus.text = "Check failed: ${e.message}"
+            } finally {
+                binding.btnCheckUpdate.isEnabled = true
+            }
+        }
+    }
+
+    private fun downloadAndInstall(apkUrl: String, versionName: String) {
+        binding.tvUpdateStatus.text = "Downloading update..."
+        val fileName = "IPTV-update-$versionName.apk"
+        val file = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), fileName)
+        if (file.exists()) file.delete()
+
+        val request = DownloadManager.Request(Uri.parse(apkUrl))
+            .setTitle("IPTV Update v$versionName")
+            .setDescription("Downloading update...")
+            .setDestinationUri(Uri.fromFile(file))
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+
+        val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val downloadId = dm.enqueue(request)
+
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)
+                if (id == downloadId) {
+                    unregisterReceiver(this)
+                    binding.tvUpdateStatus.text = "Download complete. Installing..."
+                    val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        FileProvider.getUriForFile(
+                            this@SettingsActivity,
+                            "${packageName}.provider",
+                            file
+                        )
+                    } else {
+                        Uri.fromFile(file)
+                    }
+                    val install = Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, "application/vnd.android.package-archive")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    startActivity(install)
+                }
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE))
+        }
+    }
+
     private fun showChangelog() {
         val text = try {
             assets.open("CHANGELOG.md").bufferedReader().use { it.readText() }
@@ -147,6 +244,10 @@ class SettingsActivity : AppCompatActivity() {
 
             updateLastRefreshText()
             updateCacheAgeText()
+            val pInfo = packageManager.getPackageInfo(packageName, 0)
+            val vName = pInfo.versionName
+            val vCode = pInfo.longVersionCode
+            binding.tvVersion.text = "v$vName.$vCode"
         }
     }
 
@@ -202,7 +303,11 @@ class SettingsActivity : AppCompatActivity() {
             if (info.state.isFinished) {
                 lifecycleScope.launch {
                     updateLastRefreshText()
-                    updateCacheAgeText()
+            updateCacheAgeText()
+            val pInfo = packageManager.getPackageInfo(packageName, 0)
+            val vName = pInfo.versionName
+            val vCode = pInfo.longVersionCode
+            binding.tvVersion.text = "v$vName.$vCode"
                 }
             }
         }

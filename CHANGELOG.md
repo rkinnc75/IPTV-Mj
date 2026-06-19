@@ -1,5 +1,14 @@
 # IPTV App - Changelog
 
+## v1.1 (build 16) - 2026-06-19 00:15
+- Version display fix, in-app updater improvements
+
+## v1.1 (build 15) - 2026-06-19 00:04
+- Test in-app update download
+
+## v1.1 (build 14) - 2026-06-18 23:33
+- Add check for updates in settings
+
 ## v1.1 (build 13) - 2026-06-18 23:04
 - Player UI overhaul: touch zones for channel change, resize button in overlay, favorites drawer with close button, buttons show on tap
 
