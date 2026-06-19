@@ -166,10 +166,33 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
+    private fun resolveRedirect(url: String): String {
+        var connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        connection.instanceFollowRedirects = false
+        connection.connect()
+        var finalUrl = url
+        while (connection.responseCode in 300..399) {
+            finalUrl = connection.getHeaderField("Location")
+            connection = java.net.URL(finalUrl).openConnection() as java.net.HttpURLConnection
+            connection.instanceFollowRedirects = false
+            connection.connect()
+        }
+        connection.disconnect()
+        return finalUrl
+    }
+
     private fun downloadAndInstall(apkUrl: String, versionName: String) {
-        binding.tvUpdateStatus.text = "Downloading update..."
+        binding.tvUpdateStatus.text = "Resolving download URL..."
         binding.progressEpgRefresh.visibility = View.VISIBLE
         binding.progressEpgRefresh.progress = 0
+        lifecycleScope.launch {
+            val resolvedUrl = withContext(Dispatchers.IO) { resolveRedirect(apkUrl) }
+            downloadFromUrl(resolvedUrl, versionName)
+        }
+    }
+
+    private fun downloadFromUrl(apkUrl: String, versionName: String) {
+        binding.tvUpdateStatus.text = "Downloading update..."
         val fileName = "IPTV-update-$versionName.apk"
         val file = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), fileName)
         if (file.exists()) file.delete()
@@ -178,6 +201,8 @@ class SettingsActivity : AppCompatActivity() {
             .setTitle("IPTV Update v$versionName")
             .setDescription("Downloading update...")
             .setDestinationUri(Uri.fromFile(file))
+            .setAllowedNetworkTypes(DownloadManager.Request.NETWORK_WIFI or DownloadManager.Request.NETWORK_MOBILE)
+            .setAllowedOverRoaming(true)
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
 
         val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager

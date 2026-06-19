@@ -1,5 +1,8 @@
 # IPTV App - Changelog
 
+## v1.1 (build 23) - 2026-06-19 01:22
+- Fix GitHub redirect issue for in-app APK download
+
 ## v1.1 (build 22) - 2026-06-19 01:14
 - Fix OOM crash caused by OkHttp BODY logging on large VOD/series responses
 
