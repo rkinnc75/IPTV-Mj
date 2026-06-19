@@ -1,5 +1,8 @@
 # IPTV App - Changelog
 
+## v1.1 (build 24) - 2026-06-19 01:55
+- New CRT retro app icon
+
 ## v1.1 (build 23) - 2026-06-19 01:22
 - Fix GitHub redirect issue for in-app APK download
 
