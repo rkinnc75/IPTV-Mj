@@ -1,5 +1,8 @@
 # IPTV App - Changelog
 
+## v1.1 (build 18) - 2026-06-19 00:28
+- Fix in-app install permission for Android 15
+
 ## v1.1 (build 17) - 2026-06-19 00:23
 - Add download progress bar for in-app updates
 
