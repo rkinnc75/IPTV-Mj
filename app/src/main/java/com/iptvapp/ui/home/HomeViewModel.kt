@@ -72,6 +72,12 @@ private fun isUsCategory(name: String?): Boolean {
             _loading.value = true
             repository.fetchLiveCategories()
             repository.fetchLiveStreams()
+            // Fetch VOD and series in background after live content
+            launch {
+                repository.fetchVodCategories()
+                repository.fetchVodStreams()
+                repository.fetchSeries()
+            }
             _loading.value = false
 
 

@@ -223,20 +223,27 @@ class SettingsActivity : AppCompatActivity() {
                     } else {
                         Uri.fromFile(file)
                     }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
-                        val permIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                            data = Uri.parse("package:$packageName")
+                    val canInstall = Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()
+                        if (!canInstall) {
+                            val permIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                                data = Uri.parse("package:$packageName")
+                            }
+                            startActivity(permIntent)
+                            binding.tvUpdateStatus.text = "Allow installs from this source, then tap Check for Updates again."
+                        } else {
+                            val install = Intent(Intent.ACTION_VIEW).apply {
+                                setDataAndType(uri, "application/vnd.android.package-archive")
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            try {
+                                startActivity(install)
+                                binding.tvUpdateStatus.text = "Install prompt opened."
+                            } catch (e: Exception) {
+                                binding.tvUpdateStatus.text = "Error: ${e.message}"
+                                Toast.makeText(this@SettingsActivity, "Install error: ${e.message}", Toast.LENGTH_LONG).show()
+                            }
                         }
-                        startActivity(permIntent)
-                        binding.tvUpdateStatus.text = "Please allow installs, then tap Check for Updates again."
-                    } else {
-                        val install = Intent(Intent.ACTION_VIEW).apply {
-                            setDataAndType(uri, "application/vnd.android.package-archive")
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        startActivity(install)
-                    }
                 }
             }
         }

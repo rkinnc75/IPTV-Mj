@@ -159,8 +159,11 @@ UpdateChecker(this).check(lifecycleScope)
         binding.rvChannels.adapter = vodAdapter
 
         lifecycleScope.launch {
-            viewModel.vodCategories.collect {
-                categoryAdapter.submitList(it)
+            viewModel.vodCategories.collect { cats ->
+                categoryAdapter.submitList(cats)
+                if (cats.isNotEmpty()) {
+                    viewModel.selectVodCategory(cats.first().categoryId)
+                }
             }
         }
     }
@@ -168,6 +171,11 @@ UpdateChecker(this).check(lifecycleScope)
     private fun showSeries() {
         binding.rvCategories.visibility = View.GONE
         binding.rvChannels.adapter = seriesAdapter
+        lifecycleScope.launch {
+            viewModel.series.collect {
+                seriesAdapter.submitList(it)
+            }
+        }
     }
 
     private fun showFavorites() {

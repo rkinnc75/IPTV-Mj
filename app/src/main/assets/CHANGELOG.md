@@ -1,5 +1,11 @@
 # IPTV App - Changelog
 
+## v1.1 (build 21) - 2026-06-19 01:03
+- Fix VOD and series loading; fetch in background to keep live channels fast
+
+## v1.1 (build 20) - 2026-06-19 00:43
+- Fix in-app install on Android 15
+
 ## v1.1 (build 19) - 2026-06-19 00:38
 - USA filter now applies instantly without restarting app
 

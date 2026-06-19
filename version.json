@@ -1,1 +1,1 @@
-{"versionCode": 19,"versionName": "1.1","apkUrl": "https://github.com/Oliver29Klozoff/IPTV-Mj/releases/download/v1.1-build19/IPTV-release.apk","notes": "USA filter now applies instantly without restarting app"}
+{"versionCode": 21,"versionName": "1.1","apkUrl": "https://github.com/Oliver29Klozoff/IPTV-Mj/releases/download/v1.1-build21/IPTV-release.apk","notes": "Fix VOD and series loading; fetch in background to keep live channels fast"}
