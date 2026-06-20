@@ -44,8 +44,13 @@
 
     <ImageView
         android:id="@+id/ivFavorite"
-        android:layout_width="24dp"
-        android:layout_height="24dp"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:padding="8dp"
+        android:focusable="true"
+        android:clickable="true"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="Toggle favorite"
         android:src="@android:drawable/btn_star_big_off"
         android:tint="#00E5FF" />
 

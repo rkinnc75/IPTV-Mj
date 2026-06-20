@@ -1,18 +1,24 @@
 package com.iptvapp.ui.player
 
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.KeyEvent
 import android.view.View
+import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import com.iptvapp.data.local.entities.ChannelEntity
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -20,6 +26,7 @@ import com.iptvapp.ui.home.ChannelAdapter
 import com.iptvapp.data.repository.XtreamRepository
 import com.iptvapp.databinding.ActivityPlayerBinding
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -30,6 +37,7 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var binding: ActivityPlayerBinding
     private var player: ExoPlayer? = null
     private val hideHandler = Handler(Looper.getMainLooper())
+    private val retryHandler = Handler(Looper.getMainLooper())
     private lateinit var guideAdapter: ChannelAdapter
 
     private val hideRunnable = Runnable {
@@ -42,12 +50,19 @@ class PlayerActivity : AppCompatActivity() {
     private var streamTitle: String = ""
     private var streamId: Int = -1
 
+    // fix: bounded auto-retry so a transient live-stream failure recovers
+    // instead of sitting on a black screen forever (the #1 IPTV playback defect).
+    private var retryCount = 0
+    private val maxRetries = 4
+
+    private var channelJob: Job? = null
+
     private val resizeModes = listOf(
         AspectRatioFrameLayout.RESIZE_MODE_FIT,
         AspectRatioFrameLayout.RESIZE_MODE_FILL,
         AspectRatioFrameLayout.RESIZE_MODE_ZOOM
     )
-    private var resizeModeIndex = 2
+    private var resizeModeIndex = 0 // default FIT (ZOOM cropped 4:3 SD channels)
 
     @Inject
     lateinit var repository: XtreamRepository
@@ -59,6 +74,9 @@ class PlayerActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityPlayerBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        // Belt-and-braces for the layout's keepScreenOn: never let a long live
+        // watch dim/sleep the screen.
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemBars()
         setupFavoritesGuide()
         setupResizeButton()
@@ -75,8 +93,6 @@ class PlayerActivity : AppCompatActivity() {
             channels = repository.getAllChannels().first()
             currentIndex = channels.indexOfFirst { it.streamId == streamId }
         }
-
-        initPlayer()
     }
 
     private fun setupChannelZones() {
@@ -107,13 +123,24 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun initPlayer() {
+        if (player != null) return
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(50000, 120000, 5000, 10000)
+            // Live IPTV: smaller buffers than the old VOD-tuned 50s/120s, so
+            // startup and post-reconnect latency are reasonable.
+            .setBufferDurationsMs(15000, 50000, 2500, 5000)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
+        // HTTP timeouts so a hung server eventually errors into onPlayerError
+        // (→ retry) instead of buffering forever.
+        val httpFactory = DefaultHttpDataSource.Factory()
+            .setConnectTimeoutMs(8000)
+            .setReadTimeoutMs(8000)
+            .setAllowCrossProtocolRedirects(true)
+
         player = ExoPlayer.Builder(this)
             .setLoadControl(loadControl)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(httpFactory))
             .build()
             .also { exoPlayer ->
                 binding.playerView.player = exoPlayer
@@ -127,26 +154,65 @@ class PlayerActivity : AppCompatActivity() {
                     }
                 }
 
-                val mediaItem = MediaItem.fromUri(streamUrl)
-                exoPlayer.setMediaItem(mediaItem)
-                exoPlayer.prepare()
-                exoPlayer.playWhenReady = true
-
                 exoPlayer.addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(state: Int) {
                         when (state) {
-                            Player.STATE_READY -> showOverlay()
+                            Player.STATE_READY -> {
+                                retryCount = 0
+                                binding.progressBuffering.visibility = View.GONE
+                                binding.tvError.visibility = View.GONE
+                                showOverlay()
+                            }
                             Player.STATE_BUFFERING -> {
+                                binding.progressBuffering.visibility = View.VISIBLE
                                 binding.epgOverlay.visibility = View.GONE
                                 binding.btnBack.visibility = View.GONE
                                 binding.btnGuide.visibility = View.GONE
                             }
-                            Player.STATE_ENDED -> finish()
+                            Player.STATE_ENDED -> {
+                                // A live stream should not legitimately end; the
+                                // server likely dropped the connection — retry.
+                                retryPlayback()
+                            }
                             else -> {}
                         }
                     }
+
+                    override fun onPlayerError(error: PlaybackException) {
+                        retryPlayback(error)
+                    }
                 })
+
+                if (streamUrl.isNotEmpty()) {
+                    exoPlayer.setMediaItem(MediaItem.fromUri(streamUrl))
+                    exoPlayer.playWhenReady = true
+                    exoPlayer.prepare()
+                }
             }
+    }
+
+    /** Bounded auto-retry with linear backoff; surfaces an error after the cap. */
+    private fun retryPlayback(error: PlaybackException? = null) {
+        val p = player ?: return
+        if (retryCount >= maxRetries) {
+            binding.progressBuffering.visibility = View.GONE
+            binding.tvError.visibility = View.VISIBLE
+            binding.tvError.text = "Stream unavailable. Press back, or up/down to change channel."
+            return
+        }
+        retryCount++
+        binding.progressBuffering.visibility = View.VISIBLE
+        retryHandler.removeCallbacksAndMessages(null)
+        retryHandler.postDelayed({
+            if (isFinishing || isDestroyed) return@postDelayed
+            p.stop()
+            p.clearMediaItems()
+            if (streamUrl.isNotEmpty()) {
+                p.setMediaItem(MediaItem.fromUri(streamUrl))
+                p.playWhenReady = true
+                p.prepare()
+            }
+        }, 1500L * retryCount)
     }
 
     private fun showOverlay() {
@@ -173,16 +239,25 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun playChannel(channel: ChannelEntity) {
-        lifecycleScope.launch {
+        // Cancel any in-flight switch so rapid channel surfing doesn't race
+        // (last click wins, not last-resolved coroutine).
+        channelJob?.cancel()
+        retryHandler.removeCallbacksAndMessages(null)
+        retryCount = 0
+        binding.tvError.visibility = View.GONE
+        channelJob = lifecycleScope.launch {
+            val url = repository.getLiveStreamUrl(channel.streamId)
             streamId = channel.streamId
             streamTitle = channel.name
-            streamUrl = repository.getLiveStreamUrl(channel.streamId)
+            streamUrl = url
             binding.tvChannelTitle.text = streamTitle
             val idx = channels.indexOfFirst { it.streamId == channel.streamId }
             if (idx >= 0) currentIndex = idx
-            player?.setMediaItem(MediaItem.fromUri(streamUrl))
-            player?.prepare()
-            player?.play()
+            player?.apply {
+                setMediaItem(MediaItem.fromUri(url))
+                playWhenReady = true
+                prepare()
+            }
         }
     }
 
@@ -198,6 +273,35 @@ class PlayerActivity : AppCompatActivity() {
         currentIndex--
         if (currentIndex < 0) currentIndex = channels.lastIndex
         playChannel(channels[currentIndex])
+    }
+
+    // fix: Android TV D-pad / remote support. The screen has no focusable
+    // transport, so map the remote keys directly. When the guide drawer is open,
+    // let the RecyclerView consume D-pad keys for its own navigation.
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (binding.guideContainer.visibility == View.VISIBLE) {
+            return super.onKeyDown(keyCode, event)
+        }
+        when (keyCode) {
+            KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_DPAD_UP -> {
+                previousChannel(); showOverlay(); return true
+            }
+            KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                nextChannel(); showOverlay(); return true
+            }
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                if (binding.epgOverlay.visibility == View.VISIBLE) {
+                    toggleFavoritesGuide()
+                } else {
+                    showOverlay()
+                }
+                return true
+            }
+            KeyEvent.KEYCODE_GUIDE, KeyEvent.KEYCODE_MENU -> {
+                toggleFavoritesGuide(); return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     private fun hideSystemBars() {
@@ -251,6 +355,7 @@ class PlayerActivity : AppCompatActivity() {
                 guideAdapter.submitEpgText(textMap)
             }
             binding.guideContainer.visibility = View.VISIBLE
+            binding.rvFavoritesGuide.requestFocus()
         }
     }
 
@@ -259,19 +364,30 @@ class PlayerActivity : AppCompatActivity() {
         if (hasFocus) hideSystemBars()
     }
 
-    override fun onPause() {
-        super.onPause()
-        player?.pause()
+    // fix: Media3 lifecycle for API 24+. Acquire the codec/socket in onStart and
+    // release in onStop, so a backgrounded player doesn't hold the decoder and
+    // keep downloading the live stream. (onStop can run without onDestroy.)
+    override fun onStart() {
+        super.onStart()
+        initPlayer()
     }
 
-    override fun onResume() {
-        super.onResume()
-        player?.play()
+    override fun onStop() {
+        super.onStop()
+        releasePlayer()
+    }
+
+    private fun releasePlayer() {
+        retryHandler.removeCallbacksAndMessages(null)
+        channelJob?.cancel()
+        player?.release()
+        player = null
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        player?.release()
-        player = null
+        hideHandler.removeCallbacksAndMessages(null)
+        retryHandler.removeCallbacksAndMessages(null)
+        releasePlayer()
     }
 }

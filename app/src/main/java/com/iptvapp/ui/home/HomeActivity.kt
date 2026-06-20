@@ -1,12 +1,19 @@
 package com.iptvapp.ui.home
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.tabs.TabLayout
 import com.iptvapp.databinding.ActivityHomeBinding
@@ -27,18 +34,34 @@ class HomeActivity : AppCompatActivity() {
     private lateinit var vodAdapter: VodAdapter
     private lateinit var seriesAdapter: SeriesAdapter
     private lateinit var guideAdapter: GuideAdapter
+
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* best-effort */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-UpdateChecker(this).check(lifecycleScope)
         binding = ActivityHomeBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        requestNotificationPermissionIfNeeded()
         setupRecyclerViews()
         setupTabs()
         setupSearch()
         setupMenu()
         observeViewModel()
-        viewModel.loadAll()
+        // Only fetch on first creation — survives rotation via the ViewModel.
+        if (savedInstanceState == null) viewModel.loadAll()
+        UpdateChecker(this).check(lifecycleScope)
+    }
+
+    // EPG progress notifications need runtime grant on Android 13+.
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     private fun setupMenu() {
@@ -137,45 +160,31 @@ UpdateChecker(this).check(lifecycleScope)
         }
     }
 
+    // Tab handlers only swap adapters and trigger the ViewModel. The single set
+    // of collectors in observeViewModel() owns all list updates — adding a new
+    // collector here on every tab tap stacked duplicate, never-cancelled
+    // collectors (a leak + racing submitList calls).
     private fun showLive() {
         binding.rvCategories.visibility = View.VISIBLE
         binding.rvCategories.adapter = categoryAdapter
         binding.rvChannels.adapter = channelAdapter
+        categoryAdapter.submitList(viewModel.liveCategories.value) // immediate
         viewModel.reloadCurrentLiveCategory()
-
-        lifecycleScope.launch {
-            viewModel.liveCategories.collect {
-                if (binding.tabLayout.selectedTabPosition != 3) {
-                    categoryAdapter.submitList(it)
-                }
-            }
-        }
-
-}
+    }
 
     private fun showVod() {
         binding.rvCategories.visibility = View.VISIBLE
         binding.rvCategories.adapter = categoryAdapter
         binding.rvChannels.adapter = vodAdapter
-
-        lifecycleScope.launch {
-            viewModel.vodCategories.collect { cats ->
-                categoryAdapter.submitList(cats)
-                if (cats.isNotEmpty()) {
-                    viewModel.selectVodCategory(cats.first().categoryId)
-                }
-            }
-        }
+        val cats = viewModel.vodCategories.value
+        categoryAdapter.submitList(cats)
+        if (cats.isNotEmpty()) viewModel.selectVodCategory(cats.first().categoryId)
     }
 
     private fun showSeries() {
         binding.rvCategories.visibility = View.GONE
         binding.rvChannels.adapter = seriesAdapter
-        lifecycleScope.launch {
-            viewModel.series.collect {
-                seriesAdapter.submitList(it)
-            }
-        }
+        seriesAdapter.submitList(viewModel.series.value)
     }
 
     private fun showFavorites() {
@@ -199,46 +208,49 @@ UpdateChecker(this).check(lifecycleScope)
         startActivity(intent)
     }
 
+    // One lifecycle-scoped collector set, paused while the Activity is stopped
+    // (repeatOnLifecycle) so it doesn't keep updating in the background.
     private fun observeViewModel() {
         lifecycleScope.launch {
-            viewModel.loading.collect {
-                binding.progressBar.visibility = if (it) View.VISIBLE else View.GONE
-            }
-        }
-        lifecycleScope.launch {
-            viewModel.liveCategories.collect {
-                categoryAdapter.submitList(it)
-            }
-        }
-        lifecycleScope.launch {
-            viewModel.channels.collect {
-                channelAdapter.submitList(it)
-                viewModel.loadEpgForChannels(it)
-            }
-        }
-        lifecycleScope.launch {
-            viewModel.vod.collect {
-                vodAdapter.submitList(it)
-            }
-        }
-        lifecycleScope.launch {
-            viewModel.series.collect {
-                seriesAdapter.submitList(it)
-            }
-        }
-        lifecycleScope.launch {
-            viewModel.guideRows.collect {
-                guideAdapter.submitList(it)
-            }
-        }
-        lifecycleScope.launch {
-            viewModel.favoriteLiveCategories.collect { favs ->
-                categoryAdapter.submitFavoriteCategoryIds(favs.map { it.categoryId }.toSet())
-            }
-        }
-        lifecycleScope.launch {
-            viewModel.channelEpgText.collect {
-                channelAdapter.submitEpgText(it)
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    viewModel.loading.collect {
+                        binding.progressBar.visibility = if (it) View.VISIBLE else View.GONE
+                    }
+                }
+                // categoryAdapter is shared by the Live and VOD tabs, so each
+                // category flow only feeds it while its own tab is selected.
+                launch {
+                    viewModel.liveCategories.collect {
+                        if (binding.tabLayout.selectedTabPosition == 0) {
+                            categoryAdapter.submitList(it)
+                        }
+                    }
+                }
+                launch {
+                    viewModel.vodCategories.collect {
+                        if (binding.tabLayout.selectedTabPosition == 1) {
+                            categoryAdapter.submitList(it)
+                        }
+                    }
+                }
+                launch {
+                    viewModel.channels.collect {
+                        channelAdapter.submitList(it)
+                        viewModel.loadEpgForChannels(it)
+                    }
+                }
+                launch { viewModel.vod.collect { vodAdapter.submitList(it) } }
+                launch { viewModel.series.collect { seriesAdapter.submitList(it) } }
+                launch { viewModel.guideRows.collect { guideAdapter.submitList(it) } }
+                launch {
+                    viewModel.favoriteLiveCategories.collect { favs ->
+                        categoryAdapter.submitFavoriteCategoryIds(favs.map { it.categoryId }.toSet())
+                    }
+                }
+                launch {
+                    viewModel.channelEpgText.collect { channelAdapter.submitEpgText(it) }
+                }
             }
         }
     }

@@ -8,8 +8,11 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AlertDialog
 import androidx.lifecycle.lifecycleScope
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
@@ -50,6 +53,12 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySettingsBinding
     private lateinit var workManager: WorkManager
     private var currentEpgWorkId: UUID? = null
+
+    // fix: tracked so an in-progress APK download's receiver/handler are cleaned
+    // up in onDestroy if the user leaves before it completes (was leaking).
+    private var updateReceiver: BroadcastReceiver? = null
+    private var updateProgressHandler: Handler? = null
+    private var updateProgressRunnable: Runnable? = null
 
     @Inject
     lateinit var prefs: PreferencesManager
@@ -209,6 +218,7 @@ class SettingsActivity : AppCompatActivity() {
         val downloadId = dm.enqueue(request)
 
         val progressHandler = Handler(Looper.getMainLooper())
+        updateProgressHandler = progressHandler
         val progressRunnable = object : Runnable {
             override fun run() {
                 val query = DownloadManager.Query().setFilterById(downloadId)
@@ -229,17 +239,18 @@ class SettingsActivity : AppCompatActivity() {
                 cursor.close()
             }
         }
+        updateProgressRunnable = progressRunnable
         progressHandler.post(progressRunnable)
 
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)
                 if (id == downloadId) {
-                    unregisterReceiver(this)
+                    runCatching { unregisterReceiver(this) }
+                    updateReceiver = null
                     progressHandler.removeCallbacks(progressRunnable)
                     binding.progressEpgRefresh.progress = 100
                     binding.tvUpdateStatus.text = "Download complete. Installing..."
-                    Toast.makeText(this@SettingsActivity, "Receiver fired! canInstall=${packageManager.canRequestPackageInstalls()}", Toast.LENGTH_LONG).show()
                     val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                         FileProvider.getUriForFile(
                             this@SettingsActivity,
@@ -273,12 +284,23 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
         }
+        updateReceiver = receiver
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), Context.RECEIVER_NOT_EXPORTED)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
             registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE))
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // Clean up a download in progress so the receiver/handler don't leak the
+        // Activity if the user leaves before the APK download finishes.
+        updateReceiver?.let { runCatching { unregisterReceiver(it) } }
+        updateReceiver = null
+        updateProgressRunnable?.let { updateProgressHandler?.removeCallbacks(it) }
+        updateProgressHandler?.removeCallbacksAndMessages(null)
     }
 
     private fun showChangelog() {
@@ -330,6 +352,8 @@ class SettingsActivity : AppCompatActivity() {
                 .setInputData(
                     workDataOf(EpgRefreshWorker.KEY_MISSING_ONLY to missingOnly)
                 )
+                .setConstraints(epgWorkConstraints())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .build()
 
             currentEpgWorkId = request.id
@@ -416,6 +440,8 @@ class SettingsActivity : AppCompatActivity() {
             .setInputData(
                 workDataOf(EpgRefreshWorker.KEY_MISSING_ONLY to true)
             )
+            .setConstraints(epgWorkConstraints())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
             .build()
 
         workManager.enqueueUniquePeriodicWork(
@@ -424,6 +450,13 @@ class SettingsActivity : AppCompatActivity() {
             request
         )
     }
+
+    // EPG refresh needs the network; without this it fires offline, every
+    // fetch throws, and (pre-fix) failed permanently.
+    private fun epgWorkConstraints(): Constraints =
+        Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
 
     private suspend fun updateLastRefreshText() {
         val time = prefs.lastEpgRefreshTime.first()

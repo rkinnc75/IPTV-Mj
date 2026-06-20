@@ -17,6 +17,7 @@ import com.iptvapp.data.repository.XtreamRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.flow.first
+import kotlin.coroutines.cancellation.CancellationException
 
 @HiltWorker
 class EpgRefreshWorker @AssistedInject constructor(
@@ -69,7 +70,7 @@ class EpgRefreshWorker @AssistedInject constructor(
             channelsToRefresh.forEachIndexed { index, channel ->
                 if (isStopped) {
                     updateProgress(notificationManager, 0, "EPG refresh canceled")
-                    return Result.failure()
+                    return Result.success()
                 }
 
                 val beforeStatus = "Refreshing ${channel.name}"
@@ -115,31 +116,28 @@ class EpgRefreshWorker @AssistedInject constructor(
                     .putString(KEY_STATUS, "EPG refresh complete")
                     .build()
             )
+        } catch (e: CancellationException) {
+            throw e // let WorkManager handle cancellation; don't treat as failure
         } catch (e: Exception) {
             val errorText = "EPG refresh failed: ${e.javaClass.simpleName}: ${e.message ?: "Unknown error"}"
             Log.e("EpgRefreshWorker", errorText, e)
 
-            setProgress(
-                Data.Builder()
-                    .putInt(KEY_PROGRESS, 0)
-                    .putString(KEY_STATUS, errorText)
-                    .build()
-            )
-
             updateProgress(notificationManager, 0, errorText)
 
-            Result.failure(
-                Data.Builder()
-                    .putInt(KEY_PROGRESS, 0)
-                    .putString(KEY_STATUS, errorText)
-                    .build()
-            )
+            // Transient (network/server) failures should reschedule with
+            // WorkManager backoff rather than fail permanently. Give up only
+            // after a few attempts so a genuinely dead config doesn't loop.
+            if (runAttemptCount < MAX_ATTEMPTS) {
+                Result.retry()
+            } else {
+                Result.failure(
+                    Data.Builder()
+                        .putInt(KEY_PROGRESS, 0)
+                        .putString(KEY_STATUS, errorText)
+                        .build()
+                )
+            }
         }
-    }
-
-    private fun isUsCategory(name: String?): Boolean {
-        if (name.isNullOrBlank()) return false
-        return name.trim().uppercase().startsWith("US|")
     }
 
     private fun updateProgress(
@@ -157,19 +155,12 @@ class EpgRefreshWorker @AssistedInject constructor(
             .build()
 
         try {
-            try {
             notificationManager.notify(NOTIFICATION_ID, notification)
         } catch (_: SecurityException) {
-            // Android 13+ notification permission may be denied.
-            // Do not fail the EPG refresh because notification display failed.
+            // Android 13+ POST_NOTIFICATIONS may be denied — never fail the
+            // EPG refresh just because the progress notification can't show.
         } catch (_: Exception) {
-            // Keep worker running even if notification display fails.
-        }
-        } catch (_: SecurityException) {
-            // Android 13+ notification permission may be denied.
-            // Do not fail the EPG refresh because notification display failed.
-        } catch (_: Exception) {
-            // Keep worker running even if notification display fails.
+            // Keep the worker running even if notification display fails.
         }
     }
 
@@ -196,5 +187,6 @@ class EpgRefreshWorker @AssistedInject constructor(
 
         private const val CHANNEL_ID = "epg_refresh_channel"
         private const val NOTIFICATION_ID = 3001
+        private const val MAX_ATTEMPTS = 3
     }
 }

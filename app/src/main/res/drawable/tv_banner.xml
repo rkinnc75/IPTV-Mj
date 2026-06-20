@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android TV launcher banner (rendered at 320x180). A real artwork banner is
+     preferable, but this gives a valid, non-placeholder tile: the app icon on a
+     dark background instead of the generic missing-banner box. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#0A0A0A" />
+        </shape>
+    </item>
+    <item
+        android:width="96dp"
+        android:height="96dp"
+        android:drawable="@mipmap/ic_launcher"
+        android:gravity="center" />
+</layer-list>

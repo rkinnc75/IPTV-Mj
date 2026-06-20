@@ -8,6 +8,7 @@ import androidx.lifecycle.lifecycleScope
 import com.iptvapp.databinding.ActivityMainBinding
 import com.iptvapp.ui.login.LoginActivity
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
@@ -24,12 +25,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun observeLoginStatus() {
+        // One-shot routing decision: don't keep an infinite collector alive that
+        // re-navigates whenever credentials change while backgrounded.
         lifecycleScope.launch {
-            viewModel.isLoggedIn.collect { loggedIn ->
-                if (!loggedIn) {
-                    startActivity(Intent(this@MainActivity, LoginActivity::class.java))
-                    finish()
-                }
+            if (!viewModel.isLoggedIn.first()) {
+                startActivity(Intent(this@MainActivity, LoginActivity::class.java))
+                finish()
             }
         }
     }

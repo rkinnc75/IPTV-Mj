@@ -18,16 +18,31 @@ android {
     }
     signingConfigs {
         release {
-            storeFile file("${System.properties['user.home']}/.android/debug.keystore")
-            storePassword 'android'
-            keyAlias 'androiddebugkey'
-            keyPassword 'android'
+            // Prefer a real release keystore supplied via (un-committed)
+            // gradle.properties or env vars: RELEASE_STORE_FILE,
+            // RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD.
+            // Falls back to the local debug keystore ONLY for dev builds — a
+            // release signed with the public debug key must never be shipped
+            // (anyone can forge an update with the same well-known key).
+            def ksPath = project.findProperty('RELEASE_STORE_FILE')
+            if (ksPath) {
+                storeFile file(ksPath)
+                storePassword project.findProperty('RELEASE_STORE_PASSWORD')
+                keyAlias project.findProperty('RELEASE_KEY_ALIAS')
+                keyPassword project.findProperty('RELEASE_KEY_PASSWORD')
+            } else {
+                storeFile file("${System.properties['user.home']}/.android/debug.keystore")
+                storePassword 'android'
+                keyAlias 'androiddebugkey'
+                keyPassword 'android'
+            }
         }
     }
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
             signingConfig signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
@@ -44,6 +59,7 @@ android {
 
     buildFeatures {
         viewBinding true
+        buildConfig true
     }
 }
 

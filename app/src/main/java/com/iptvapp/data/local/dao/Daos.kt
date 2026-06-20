@@ -10,6 +10,11 @@ interface ChannelDao {
     @Query("SELECT * FROM channels ORDER BY num ASC")
     fun getAllChannels(): Flow<List<ChannelEntity>>
 
+    // One-shot snapshot (used during refresh to preserve favorite/lastWatched)
+    // — avoids collecting the Flow just to read it once.
+    @Query("SELECT * FROM channels")
+    suspend fun getAllChannelsOnce(): List<ChannelEntity>
+
     @Query("SELECT * FROM channels WHERE categoryId = :categoryId ORDER BY num ASC")
     fun getChannelsByCategory(categoryId: String): Flow<List<ChannelEntity>>
 

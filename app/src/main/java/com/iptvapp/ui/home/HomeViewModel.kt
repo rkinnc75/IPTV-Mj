@@ -61,6 +61,7 @@ class HomeViewModel @Inject constructor(
     private var vodJob: Job? = null
     private var searchJob: Job? = null
     private var guideJob: Job? = null
+    private var epgJob: Job? = null
 
 private fun isUsCategory(name: String?): Boolean {
         if (name.isNullOrBlank()) return false
@@ -146,7 +147,10 @@ private fun isUsCategory(name: String?): Boolean {
     }
 
     fun loadEpgForChannels(channels: List<ChannelEntity>) {
-        viewModelScope.launch {
+        // Cancel the previous EPG fetch — the channel list emits often (category
+        // switch, search, favorites) and overlapping fetches stacked up.
+        epgJob?.cancel()
+        epgJob = viewModelScope.launch {
             val visibleChannels = channels.take(50)
 
             visibleChannels.forEach { channel ->

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Scoped to exactly the APK update directory the FileProvider needs
+     (getExternalFilesDir(DIRECTORY_DOWNLOADS) -> files/Download/). The previous
+     "." roots exposed the entire cache/files trees to any granted recipient. -->
 <paths>
-    <cache-path name="apk_cache" path="." />
-    <external-cache-path name="external_apk_cache" path="." />
-    <external-files-path name="external_files" path="." />
+    <external-files-path name="apk_downloads" path="Download/" />
 </paths>

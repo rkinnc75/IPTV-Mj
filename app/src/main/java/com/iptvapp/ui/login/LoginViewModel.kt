@@ -2,6 +2,7 @@ package com.iptvapp.ui.login
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.iptvapp.data.api.XtreamUrlBuilder
 import com.iptvapp.data.repository.XtreamRepository
 import com.iptvapp.util.Resource
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -19,17 +20,23 @@ class LoginViewModel @Inject constructor(
     val loginState: StateFlow<Resource<Unit>?> = _loginState
 
     fun login(serverUrl: String, username: String, password: String) {
-        if (serverUrl.isBlank() || username.isBlank() || password.isBlank()) {
+        // Validate at the ViewModel boundary (not only in the Activity): trim,
+        // require all fields, and require a real http(s) URL with a host so a
+        // value like "http://" or "https:// " can't reach authenticate().
+        val url = serverUrl.trim()
+        val user = username.trim()
+        if (url.isBlank() || user.isBlank() || password.isBlank()) {
             _loginState.value = Resource.Error("Please fill in all fields")
             return
         }
-        if (!serverUrl.startsWith("http://") && !serverUrl.startsWith("https://")) {
-            _loginState.value = Resource.Error("Server URL must start with http:// or https://")
+        if (!XtreamUrlBuilder.isValidServerUrl(url)) {
+            _loginState.value =
+                Resource.Error("Enter a valid server URL, e.g. http://host:port")
             return
         }
         viewModelScope.launch {
             _loginState.value = Resource.Loading
-            val result = repository.authenticate(serverUrl.trimEnd('/'), username, password)
+            val result = repository.authenticate(url.trimEnd('/'), user, password)
             _loginState.value = when (result) {
                 is Resource.Success -> Resource.Success(Unit)
                 is Resource.Error -> Resource.Error(result.message)

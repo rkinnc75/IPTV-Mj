@@ -1,14 +1,17 @@
 package com.iptvapp.data.repository
 
 import android.util.Base64
+import androidx.room.withTransaction
 import com.iptvapp.data.api.*
 import com.iptvapp.data.local.IptvDatabase
 import com.iptvapp.data.local.PreferencesManager
 import com.iptvapp.data.local.entities.*
 import com.iptvapp.util.Resource
 import com.iptvapp.util.safeApiCall
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -31,7 +34,10 @@ class XtreamRepository @Inject constructor(
             val response = api.authenticate(builder.apiUrl(), username, password)
             if (!response.isSuccessful) throw Exception("Server returned ${response.code()}")
             val body = response.body() ?: throw Exception("Empty response from server")
-            if (body.userInfo.status != "Active") throw Exception("Account is not active")
+            // userInfo may be absent if the server returns an error object.
+            val status = body.userInfo?.status
+                ?: throw Exception("Invalid credentials or server response")
+            if (status != "Active") throw Exception("Account is not active (status: $status)")
             prefs.saveCredentials(serverUrl, username, password)
             body
         }
@@ -42,16 +48,22 @@ class XtreamRepository @Inject constructor(
         db.clearAllTables()
     }
 
-    suspend fun fetchLiveCategories(): Resource<List<Category>> {
-        val b = urlBuilder(); val c = creds()
-        return safeApiCall {
+    suspend fun fetchLiveCategories(): Resource<List<Category>> = safeApiCall {
+        withContext(Dispatchers.IO) {
+            val b = urlBuilder(); val c = creds()
             val response = api.getLiveCategories(b.apiUrl(), c.username, c.password)
+            // Do NOT mutate the cache on an error response — an empty body from
+            // a 401/500 would otherwise wipe the user's categories.
+            if (!response.isSuccessful) throw Exception("Server returned ${response.code()}")
             val list = response.body() ?: emptyList()
-
-            db.categoryDao().deleteCategoriesByType("live")
-            db.categoryDao().upsertCategories(list.map {
-                CategoryEntity(it.categoryId, it.categoryName, it.parentId, "live")
-            })
+            val entities = list.mapNotNull { cat ->
+                val id = cat.categoryId ?: return@mapNotNull null
+                CategoryEntity(id, cat.categoryName ?: "", cat.parentId, "live")
+            }
+            db.withTransaction {
+                db.categoryDao().deleteCategoriesByType("live")
+                db.categoryDao().upsertCategories(entities)
+            }
             list
         }
     }
@@ -59,26 +71,30 @@ class XtreamRepository @Inject constructor(
     fun getLiveCategories(): Flow<List<CategoryEntity>> =
         db.categoryDao().getCategoriesByType("live")
 
-    suspend fun fetchLiveStreams(): Resource<List<LiveStream>> {
-        val b = urlBuilder(); val c = creds()
-        return safeApiCall {
+    suspend fun fetchLiveStreams(): Resource<List<LiveStream>> = safeApiCall {
+        withContext(Dispatchers.IO) {
+            val b = urlBuilder(); val c = creds()
             val response = api.getLiveStreams(b.apiUrl(), c.username, c.password)
+            if (!response.isSuccessful) throw Exception("Server returned ${response.code()}")
             val list = response.body() ?: emptyList()
-            val existing = db.channelDao().getAllChannels().first().associateBy { it.streamId }
-            db.channelDao().upsertChannels(list.map {
-                val prev = existing[it.streamId]
+            // Preserve user-local fields (favorite / lastWatched) across refresh.
+            val existing = db.channelDao().getAllChannelsOnce().associateBy { it.streamId }
+            val entities = list.mapNotNull { s ->
+                if (s.streamId == 0) return@mapNotNull null
+                val prev = existing[s.streamId]
                 ChannelEntity(
-                    streamId = it.streamId,
-                    name = it.name,
-                    streamIcon = it.streamIcon,
-                    categoryId = it.categoryId,
-                    epgChannelId = it.epgChannelId,
-                    tvArchive = it.tvArchive,
-                    num = it.num,
+                    streamId = s.streamId,
+                    name = s.name ?: "Unknown",
+                    streamIcon = s.streamIcon,
+                    categoryId = s.categoryId,
+                    epgChannelId = s.epgChannelId,
+                    tvArchive = s.tvArchive,
+                    num = s.num,
                     isFavorite = prev?.isFavorite ?: false,
                     lastWatched = prev?.lastWatched
                 )
-            })
+            }
+            db.channelDao().upsertChannels(entities)
             list
         }
     }
@@ -106,7 +122,7 @@ class XtreamRepository @Inject constructor(
     }
 
     suspend fun markChannelWatched(streamId: Int) =
-        db.channelDao().updateLastWatched(streamId)
+        db.channelDao().updateLastWatched(streamId, System.currentTimeMillis())
 
     suspend fun setLiveCategoryFavorite(categoryId: String, isFavorite: Boolean) {
         db.channelDao().setFavoriteForCategory(categoryId, isFavorite)
@@ -123,34 +139,43 @@ class XtreamRepository @Inject constructor(
         return urlBuilder().liveStreamUrl(streamId, format)
     }
 
-    suspend fun fetchVodStreams(): Resource<List<VodStream>> {
-        val b = urlBuilder(); val c = creds()
-        return safeApiCall {
+    suspend fun fetchVodStreams(): Resource<List<VodStream>> = safeApiCall {
+        withContext(Dispatchers.IO) {
+            val b = urlBuilder(); val c = creds()
             val response = api.getVodStreams(b.apiUrl(), c.username, c.password)
+            if (!response.isSuccessful) throw Exception("Server returned ${response.code()}")
             val list = response.body() ?: emptyList()
-            db.vodDao().upsertVod(list.map {
+            val entities = list.mapNotNull { v ->
+                if (v.streamId == 0) return@mapNotNull null
                 VodEntity(
-                    streamId = it.streamId,
-                    name = it.name,
-                    streamIcon = it.streamIcon,
-                    categoryId = it.categoryId,
-                    rating = it.rating,
-                    containerExtension = it.containerExtension,
-                    added = it.added
+                    streamId = v.streamId,
+                    name = v.name ?: "Unknown",
+                    streamIcon = v.streamIcon,
+                    categoryId = v.categoryId,
+                    rating = v.rating,
+                    containerExtension = v.containerExtension ?: "mp4",
+                    added = v.added
                 )
-            })
+            }
+            db.vodDao().upsertVod(entities)
             list
         }
     }
 
-
-    suspend fun fetchVodCategories(): Resource<List<Category>> {
-        val b = urlBuilder(); val c = creds()
-        return safeApiCall {
+    suspend fun fetchVodCategories(): Resource<List<Category>> = safeApiCall {
+        withContext(Dispatchers.IO) {
+            val b = urlBuilder(); val c = creds()
             val response = api.getVodCategories(b.apiUrl(), c.username, c.password)
+            if (!response.isSuccessful) throw Exception("Server returned ${response.code()}")
             val list = response.body() ?: emptyList()
-            db.categoryDao().deleteCategoriesByType("vod")
-            db.categoryDao().upsertCategories(list.map { CategoryEntity(it.categoryId, it.categoryName, it.parentId, "vod") })
+            val entities = list.mapNotNull { cat ->
+                val id = cat.categoryId ?: return@mapNotNull null
+                CategoryEntity(id, cat.categoryName ?: "", cat.parentId, "vod")
+            }
+            db.withTransaction {
+                db.categoryDao().deleteCategoriesByType("vod")
+                db.categoryDao().upsertCategories(entities)
+            }
             list
         }
     }
@@ -163,43 +188,48 @@ class XtreamRepository @Inject constructor(
 
     fun getAllVod(): Flow<List<VodEntity>> = db.vodDao().getAllVod()
 
-    suspend fun fetchSeries(): Resource<List<Series>> {
-        val b = urlBuilder(); val c = creds()
-        return safeApiCall {
+    suspend fun fetchSeries(): Resource<List<Series>> = safeApiCall {
+        withContext(Dispatchers.IO) {
+            val b = urlBuilder(); val c = creds()
             val response = api.getSeries(b.apiUrl(), c.username, c.password)
+            if (!response.isSuccessful) throw Exception("Server returned ${response.code()}")
             val list = response.body() ?: emptyList()
-            db.seriesDao().upsertSeries(list.map {
+            val entities = list.mapNotNull { s ->
+                if (s.seriesId == 0) return@mapNotNull null
                 SeriesEntity(
-                    seriesId = it.seriesId,
-                    name = it.name,
-                    cover = it.cover,
-                    plot = it.plot,
-                    genre = it.genre,
-                    rating = it.rating,
-                    categoryId = it.categoryId
+                    seriesId = s.seriesId,
+                    name = s.name ?: "Unknown",
+                    cover = s.cover,
+                    plot = s.plot,
+                    genre = s.genre,
+                    rating = s.rating,
+                    categoryId = s.categoryId
                 )
-            })
+            }
+            db.seriesDao().upsertSeries(entities)
             list
         }
     }
 
     fun getAllSeries(): Flow<List<SeriesEntity>> = db.seriesDao().getAllSeries()
 
-    suspend fun fetchEpg(streamId: Int): Resource<List<EpgEntity>> {
-        val b = urlBuilder(); val c = creds()
-        return safeApiCall {
+    suspend fun fetchEpg(streamId: Int): Resource<List<EpgEntity>> = safeApiCall {
+        withContext(Dispatchers.IO) {
+            val b = urlBuilder(); val c = creds()
             val response = api.getShortEpg(b.apiUrl(), c.username, c.password, streamId = streamId)
+            if (!response.isSuccessful) throw Exception("Server returned ${response.code()}")
             val list = response.body()?.epgListings ?: emptyList()
-            val entities = list.map {
+            val entities = list.mapNotNull { e ->
+                val id = e.id ?: return@mapNotNull null
                 EpgEntity(
-                    id = it.id,
+                    id = id,
                     streamId = streamId,
-                    title = decodeBase64(it.title),
-                    description = decodeBase64(it.description),
-                    startTimestamp = it.startTimestamp,
-                    stopTimestamp = it.stopTimestamp,
-                    nowPlaying = it.nowPlaying,
-                    hasArchive = it.hasArchive
+                    title = decodeBase64(e.title),
+                    description = decodeBase64(e.description),
+                    startTimestamp = e.startTimestamp,
+                    stopTimestamp = e.stopTimestamp,
+                    nowPlaying = e.nowPlaying,
+                    hasArchive = e.hasArchive
                 )
             }
             db.epgDao().upsertEpg(entities)
@@ -213,9 +243,12 @@ class XtreamRepository @Inject constructor(
     fun getEpgForStreams(streamIds: List<Int>): Flow<List<EpgEntity>> =
         db.epgDao().getEpgForStreams(streamIds)
 
-    private fun decodeBase64(encoded: String): String = try {
-        String(Base64.decode(encoded, Base64.DEFAULT))
-    } catch (e: Exception) {
-        encoded
+    private fun decodeBase64(encoded: String?): String {
+        if (encoded.isNullOrEmpty()) return ""
+        return try {
+            String(Base64.decode(encoded, Base64.DEFAULT))
+        } catch (e: Exception) {
+            encoded
+        }
     }
 }

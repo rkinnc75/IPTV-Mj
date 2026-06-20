@@ -13,7 +13,11 @@ import com.iptvapp.data.local.entities.*
         SeriesEntity::class,
         EpgEntity::class
     ],
-    version = 2,
+    // v3: added indices on hot columns (categoryId/num/isFavorite/lastWatched,
+    // categories.type, epg streamId+startTimestamp/stopTimestamp). Migration is
+    // handled by fallbackToDestructiveMigration in AppModule — this is a
+    // server-backed cache, so it simply rebuilds on upgrade.
+    version = 3,
     exportSchema = false
 )
 abstract class IptvDatabase : RoomDatabase() {
